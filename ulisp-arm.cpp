@@ -20,6 +20,7 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <limits.h>
+#include "ulisp.h"
 
 #if defined(sdcardsupport)
 #include <SD.h>
@@ -27,91 +28,6 @@
 #else
 #define SDSIZE 0
 #endif
-
-// C Macros
-
-#define nil                NULL
-#define car(x)             (((object *) (x))->car)
-#define cdr(x)             (((object *) (x))->cdr)
-
-#define first(x)           (((object *) (x))->car)
-#define second(x)          (car(cdr(x)))
-#define cddr(x)            (cdr(cdr(x)))
-#define third(x)           (car(cdr(cdr(x))))
-
-#define push(x, y)         ((y) = cons((x),(y)))
-#define pop(y)             ((y) = cdr(y))
-
-#define integerp(x)        ((x) != NULL && (x)->type == NUMBER)
-#define floatp(x)          ((x) != NULL && (x)->type == FLOAT)
-#define symbolp(x)         ((x) != NULL && (x)->type == SYMBOL)
-#define stringp(x)         ((x) != NULL && (x)->type == STRING)
-#define characterp(x)      ((x) != NULL && (x)->type == CHARACTER)
-#define streamp(x)         ((x) != NULL && (x)->type == STREAM)
-
-#define mark(x)            (car(x) = (object *)(((uintptr_t)(car(x))) | MARKBIT))
-#define unmark(x)          (car(x) = (object *)(((uintptr_t)(car(x))) & ~MARKBIT))
-#define marked(x)          ((((uintptr_t)(car(x))) & MARKBIT) != 0)
-#define MARKBIT            1
-
-#define setflag(x)         (Flags = Flags | 1<<(x))
-#define clrflag(x)         (Flags = Flags & ~(1<<(x)))
-#define tstflag(x)         (Flags & 1<<(x))
-
-// Constants
-
-const int TRACEMAX = 3; // Number of traced functions
-enum type { ZERO=0, SYMBOL=2, NUMBER=4, STREAM=6, CHARACTER=8, FLOAT=10, STRING=12, PAIR=14 };  // STRING and PAIR must be last
-enum token { UNUSED, BRA, KET, QUO, DOT };
-enum stream { SERIALSTREAM, I2CSTREAM, SPISTREAM, SDSTREAM };
-
-enum function { SYMBOLS, NIL, TEE, NOTHING, AMPREST, LAMBDA, LET, LETSTAR, CLOSURE, SPECIAL_FORMS, QUOTE,
-DEFUN, DEFVAR, SETQ, LOOP, PUSH, POP, INCF, DECF, SETF, DOLIST, DOTIMES, TRACE, UNTRACE, FORMILLIS,
-WITHSERIAL, WITHI2C, WITHSPI, WITHSDCARD, TAIL_FORMS, PROGN, RETURN, IF, COND, WHEN, UNLESS, AND, OR,
-FUNCTIONS, NOT, NULLFN, CONS, ATOM, LISTP, CONSP, SYMBOLP, STREAMP, EQ, CAR, FIRST, CDR, REST, CAAR, CADR,
-SECOND, CDAR, CDDR, CAAAR, CAADR, CADAR, CADDR, THIRD, CDAAR, CDADR, CDDAR, CDDDR, LENGTH, LIST, REVERSE,
-NTH, ASSOC, MEMBER, APPLY, FUNCALL, APPEND, MAPC, MAPCAR, ADD, SUBTRACT, MULTIPLY, DIVIDE, MOD, ONEPLUS,
-ONEMINUS, ABS, RANDOM, MAXFN, MINFN, NOTEQ, NUMEQ, LESS, LESSEQ, GREATER, GREATEREQ, PLUSP, MINUSP, ZEROP,
-ODDP, EVENP, INTEGERP, NUMBERP, FLOATFN, FLOATP, SIN, COS, TAN, ASIN, ACOS, ATAN, SINH, COSH, TANH, EXP,
-SQRT, LOG, EXPT, CEILING, FLOOR, TRUNCATE, ROUND, CHAR, CHARCODE, CODECHAR, CHARACTERP, STRINGP, STRINGEQ,
-STRINGLESS, STRINGGREATER, SORT, STRINGFN, CONCATENATE, SUBSEQ, READFROMSTRING, PRINCTOSTRING,
-PRIN1TOSTRING, LOGAND, LOGIOR, LOGXOR, LOGNOT, ASH, LOGBITP, EVAL, GLOBALS, LOCALS, MAKUNBOUND, BREAK,
-READ, PRIN1, PRINT, PRINC, TERPRI, READBYTE, READLINE, WRITEBYTE, WRITESTRING, WRITELINE, RESTARTI2C, GC,
-ROOM, SAVEIMAGE, LOADIMAGE, CLS, PINMODE, DIGITALREAD, DIGITALWRITE, ANALOGREAD, ANALOGWRITE, DELAY,
-MILLIS, SLEEP, NOTE, EDIT, PPRINT, PPRINTALL, ENDFUNCTIONS };
-
-// Typedefs
-
-typedef unsigned int symbol_t;
-
-typedef struct sobject {
-  union {
-    struct {
-      sobject *car;
-      sobject *cdr;
-    };
-    struct {
-      unsigned int type;
-      union {
-        symbol_t name;
-        int integer;
-        float single_float;
-      };
-    };
-  };
-} object;
-
-typedef object *(*fn_ptr_type)(object *, object *);
-
-typedef struct {
-  const char *string;
-  fn_ptr_type fptr;
-  uint8_t min;
-  uint8_t max;
-} tbl_entry_t;
-
-typedef int (*gfun_t)();
-typedef void (*pfun_t)(char);
 
 // Workspace
 #define PERSIST __attribute__((section(".text")))
@@ -130,7 +46,7 @@ typedef void (*pfun_t)(char);
   #define SDCARD_SS_PIN 10
   extern uint8_t _end;
 
-#elif defined(ARDUINO_SAMD_MKRZERO)
+#elif defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400)
   #define WORKSPACESIZE 3072-SDSIZE       /* Cells (8*bytes) */
   #define SYMBOLTABLESIZE 512             /* Bytes */
   uint8_t _end;
@@ -191,7 +107,6 @@ object *tee;
 object *tf_progn (object *form, object *env);
 object *eval (object *form, object *env);
 object *read ();
-void repl(object *env);
 void printobject (object *form, pfun_t pfun);
 char *lookupbuiltin (symbol_t name);
 intptr_t lookupfn (symbol_t name);
@@ -1085,7 +1000,7 @@ void I2Cstop(uint8_t read) {
 // Streams
 
 inline int spiread () { return SPI.transfer(0); }
-#if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_METRO_M4) || defined(ARDUINO_ITSYBITSY_M4) || defined(ARDUINO_FEATHER_M4)
+#if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400) || defined(ARDUINO_METRO_M4) || defined(ARDUINO_ITSYBITSY_M4) || defined(ARDUINO_FEATHER_M4)
 inline int serial1read () { while (!Serial1.available()) testescape(); return Serial1.read(); }
 #elif defined(ARDUINO_SAM_DUE)
 inline int serial1read () { while (!Serial1.available()) testescape(); return Serial1.read(); }
@@ -1105,7 +1020,7 @@ inline int SDread () {
 #endif
 
 void serialbegin (int address, int baud) {
-  #if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_METRO_M4) || defined(ARDUINO_ITSYBITSY_M4) || defined(ARDUINO_FEATHER_M4)
+  #if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400) || defined(ARDUINO_METRO_M4) || defined(ARDUINO_ITSYBITSY_M4) || defined(ARDUINO_FEATHER_M4)
   if (address == 1) Serial1.begin((long)baud*100);
   else error(PSTR("'with-serial' port not supported"));
   #elif defined(ARDUINO_SAM_DUE)
@@ -1117,7 +1032,7 @@ void serialbegin (int address, int baud) {
 }
 
 void serialend (int address) {
-  #if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_METRO_M4) || defined(ARDUINO_ITSYBITSY_M4) || defined(ARDUINO_FEATHER_M4)
+  #if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400) || defined(ARDUINO_METRO_M4) || defined(ARDUINO_ITSYBITSY_M4) || defined(ARDUINO_FEATHER_M4)
   if (address == 1) {Serial1.flush(); Serial1.end(); }
   #elif defined(ARDUINO_SAM_DUE)
   if (address == 1) {Serial1.flush(); Serial1.end(); }
@@ -1187,7 +1102,7 @@ void checkanalogread (int pin) {
   if (!(pin>=54 && pin<=65)) error(PSTR("'analogread' invalid pin"));
 #elif defined(ARDUINO_SAMD_ZERO)
   if (!(pin>=14 && pin<=19)) error(PSTR("'analogread' invalid pin"));
-#elif defined(ARDUINO_SAMD_MKRZERO)
+#elif defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400)
   if (!(pin>=15 && pin<=21)) error(PSTR("'analogread' invalid pin"));
 #elif defined(ARDUINO_METRO_M4)
   if (!(pin>=14 && pin<=21)) error(PSTR("'analogread' invalid pin"));
@@ -1205,7 +1120,7 @@ void checkanalogwrite (int pin) {
   if (!((pin>=2 && pin<=13) || pin==66 || pin==67)) error(PSTR("'analogwrite' invalid pin"));
 #elif defined(ARDUINO_SAMD_ZERO)
   if (!((pin>=3 && pin<=6) || (pin>=8 && pin<=13) || pin==14)) error(PSTR("'analogwrite' invalid pin"));
-#elif defined(ARDUINO_SAMD_MKRZERO)
+#elif defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400)
   if (!((pin>=0 && pin<=8) || pin==10 || pin==18 || pin==19)) error(PSTR("'analogwrite' invalid pin"));
 #elif defined(ARDUINO_METRO_M4)
   if (!(pin>=0 && pin<=15)) error(PSTR("'analogwrite' invalid pin"));
@@ -1242,7 +1157,7 @@ void nonote (int pin) {
 
 // Sleep
 
-#if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO)
+#if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400)
 void WDT_Handler(void) {
   // ISR for watchdog early warning
   WDT->CTRL.bit.ENABLE = 0;        // Disable watchdog
@@ -1252,7 +1167,7 @@ void WDT_Handler(void) {
 #endif
 
 void initsleep () {
-#if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO)
+#if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400)
  // One-time initialization of watchdog timer.
 
   // Generic clock generator 2, divisor = 32 (2^(DIV+1))
@@ -1278,7 +1193,7 @@ void initsleep () {
 }
 
 void sleep (int secs) {
-#if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO)
+#if defined(ARDUINO_SAMD_ZERO) || defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400)
   WDT->CTRL.reg = 0;                     // Disable watchdog for config
   while(WDT->STATUS.bit.SYNCBUSY);
   WDT->INTENSET.bit.EW   = 1;            // Enable early warning interrupt
@@ -2815,7 +2730,7 @@ object *fn_break (object *args, object *env) {
   (void) args;
   pfstring(PSTR("\rBreak!\r"), pserial);
   BreakLevel++;
-  repl(env);
+  ulisprepl(env);
   BreakLevel--;
   return nil;
 }
@@ -4071,7 +3986,7 @@ void initenv () {
   tee = symbol(TEE);
 }
 
-void setup () {
+void ulispsetup () {
   Serial.begin(9600);
   while (!Serial);
   initworkspace();
@@ -4082,7 +3997,7 @@ void setup () {
 
 // Read/Evaluate/Print loop
 
-void repl (object *env) {
+void ulisprepl (object *env) {
   for (;;) {
     randomSeed(micros());
     gc(NULL, env);
@@ -4108,7 +4023,7 @@ void repl (object *env) {
   }
 }
 
-void loop () {
+void ulisploop () {
   End = 0xA5;      // Canary to check stack
   if (!setjmp(exception)) {
     #if defined(resetautorun)
@@ -4127,5 +4042,4 @@ void loop () {
   #if defined(lisplibrary)
   if (!tstflag(LIBRARYLOADED)) { setflag(LIBRARYLOADED); loadfromlibrary(NULL); }
   #endif
-  repl(NULL);
 }
