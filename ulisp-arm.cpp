@@ -7,11 +7,11 @@
 // Compile options
 
 // #define resetautorun
-#define printfreespace
-#define serialmonitor
+// #define printfreespace
+// #define serialmonitor
 // #define printgcs
-// #define sdcardsupport
-// #define lisplibrary
+//#define sdcardsupport
+//#define lisplibrary
 
 // Includes
 
@@ -47,6 +47,7 @@
   extern uint8_t _end;
 
 #elif defined(ARDUINO_SAMD_MKRZERO) || defined(ARDUINO_SAMD_MKRGSM1400)
+  #define SDCARD_SS_PIN 4
   #define WORKSPACESIZE 3072-SDSIZE       /* Cells (8*bytes) */
   #define SYMBOLTABLESIZE 512             /* Bytes */
   uint8_t _end;
@@ -3986,18 +3987,22 @@ void initenv () {
   tee = symbol(TEE);
 }
 
-void ulispsetup () {
+void ulisp_setup () {
+#if defined (serialmonitor)
   Serial.begin(9600);
   while (!Serial);
+#endif
   initworkspace();
   initenv();
   initsleep();
+#if defined (serialmonitor)
   pfstring(PSTR("uLisp 2.5 "), pserial); pln(pserial);
+#endif
 }
 
 // Read/Evaluate/Print loop
 
-void ulisprepl (object *env) {
+void ulisp_repl (object *env) {
   for (;;) {
     randomSeed(micros());
     gc(NULL, env);
@@ -4023,7 +4028,7 @@ void ulisprepl (object *env) {
   }
 }
 
-void ulisploop () {
+void ulisp_loop () {
   End = 0xA5;      // Canary to check stack
   if (!setjmp(exception)) {
     #if defined(resetautorun)
@@ -4034,7 +4039,9 @@ void ulisploop () {
     if (autorun == 12) autorunimage();
   }
   // Come here after error
+#if defined (serialmonitor)
   delay(100); while (Serial.available()) Serial.read();
+#endif
   for (int i=0; i<TRACEMAX; i++) TraceDepth[i] = 0;
   #if defined(sdcardsupport)
   SDpfile.close(); SDgfile.close();
@@ -4042,4 +4049,26 @@ void ulisploop () {
   #if defined(lisplibrary)
   if (!tstflag(LIBRARYLOADED)) { setflag(LIBRARYLOADED); loadfromlibrary(NULL); }
   #endif
+}
+
+char * script;
+
+int gscript () {
+  if (LastChar) { 
+    char temp = LastChar;
+    LastChar = 0;
+    return temp;
+  }
+  char c = script[GlobalStringIndex++];
+  return (c != 0) ? c : -1; // -1?
+}
+
+void ulisp_eval_string (const char *string, object *env) {
+  script = (char *)string;
+  GlobalStringIndex = 0;
+  object *line = read(gscript);
+  while (line != NULL) {
+    eval(line, env);
+    line = read(gscript);
+  }
 }
